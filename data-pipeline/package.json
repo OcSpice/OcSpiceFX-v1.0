@@ -1,0 +1,22 @@
+{
+  "name": "data-pipeline",
+  "version": "1.0.0",
+  "description": "Dukascopy data pipeline for OcSpiceFX Strategy Laboratory",
+  "type": "module",
+  "main": "download.js",
+  "scripts": {
+    "download": "node download.js",
+    "merge": "node merge.js",
+    "convert": "node convert.js",
+    "pipeline": "npm run download && npm run merge && npm run convert"
+  },
+  "keywords": ["dukascopy", "forex", "data", "pipeline"],
+  "author": "OcSpice",
+  "license": "ISC",
+  "dependencies": {
+    "dukascopy-node": "^3.0.0",
+    "fs-extra": "^11.2.0",
+    "csv-parser": "^3.0.0",
+    "parquets": "^1.1.8"
+  }
+}
