@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import os
 from backend.prop_firm_engine import PropFirmEngine
+from backend.broker_engine import StandardBrokerEngine
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), '..', 'data', 'parquet')
 
@@ -29,14 +30,22 @@ def load_data(symbol: str):
     df.sort_index(inplace=True)
     return df
 
-def run_backtest(df: pd.DataFrame, symbol: str, broker_config: dict, prop_firm_engine: PropFirmEngine):
+def run_backtest(df: pd.DataFrame, symbol: str, broker_config: dict, broker_engine):
+    """
+    Run backtest with support for both PropFirmEngine and StandardBrokerEngine.
+    :param df: DataFrame with OHLCV data
+    :param symbol: Symbol name (e.g., 'eurusd')
+    :param broker_config: Dict with spread_pips, slippage_pips, commission_per_lot
+    :param broker_engine: Either PropFirmEngine or StandardBrokerEngine instance
+    """
     cfg = ASSET_CONFIG[symbol]
     pip = cfg['pip_size']
+    is_jpy = 'jpy' in symbol.lower()
     
     # Broker Config
-    spread_pips = broker_config['spread_pips']
-    slippage_pips = broker_config['slippage_pips']
-    commission_per_lot = broker_config['commission_per_lot']
+    spread_pips = broker_config.get('spread_pips', 1)
+    slippage_pips = broker_config.get('slippage_pips', 0.5)
+    commission_per_lot = broker_config.get('commission_per_lot', 5.0)
     
     # Build H1 Bias
     df_h1 = df.resample('1h').agg({'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last'}).dropna()
@@ -48,10 +57,26 @@ def run_backtest(df: pd.DataFrame, symbol: str, broker_config: dict, prop_firm_e
     trade_active, direction = False, ""
     entry_price = stop_price = target_price = initial_stop = None
     entry_idx, state, active_ob = 0, "neutral", None
+    size = 0.0
     trades = []
     
     for i in range(60, len(df)):
         if trade_active:
+            # Calculate current floating PnL
+            if direction == "long":
+                raw_pnl_pips = (m5_c[i] - entry_price) / pip
+            else:
+                raw_pnl_pips = (entry_price - m5_c[i]) / pip
+                
+            floating_pnl = (raw_pnl_pips * cfg['pip_value'] * size) - (commission_per_lot * size)
+            
+            # Update broker with floating PnL
+            if isinstance(broker_engine, StandardBrokerEngine):
+                broker_engine.update_floating(floating_pnl)
+                if broker_engine.status == "Blown":
+                    trades.append({"time": pd.Timestamp(m5_t[i]), "pnl": floating_pnl, "reason": "stop_out"})
+                    break # Account is blown, halt backtest
+            
             # Time stop (120 candles = 10 hours)
             if i - entry_idx >= 120:
                 exit_price = m5_c[i]
@@ -61,7 +86,12 @@ def run_backtest(df: pd.DataFrame, symbol: str, broker_config: dict, prop_firm_e
                 net_pnl_pips = raw_pnl - (slippage_pips * 2 + spread_pips)
                 pnl_usd = (net_pnl_pips * cfg['pip_value'] * size) - (commission_per_lot * size)
                 trades.append({"time": pd.Timestamp(m5_t[i]), "pnl": pnl_usd, "reason": "time_stop"})
-                if not prop_firm_engine.process_trade(pnl_usd, pd.Timestamp(m5_t[i])): break
+                
+                if isinstance(broker_engine, StandardBrokerEngine):
+                    broker_engine.close_trade(pnl_usd, size, entry_price, is_jpy)
+                elif isinstance(broker_engine, PropFirmEngine):
+                    broker_engine.process_trade(pnl_usd, pd.Timestamp(m5_t[i]))
+                    
                 trade_active = False; state = "neutral"; continue
                 
             if direction == "long":
@@ -71,7 +101,12 @@ def run_backtest(df: pd.DataFrame, symbol: str, broker_config: dict, prop_firm_e
                     net_pnl_pips = raw_pnl - (slippage_pips * 2 + spread_pips)
                     pnl_usd = (net_pnl_pips * cfg['pip_value'] * size) - (commission_per_lot * size)
                     trades.append({"time": pd.Timestamp(m5_t[i]), "pnl": pnl_usd, "reason": "stop_loss"})
-                    if not prop_firm_engine.process_trade(pnl_usd, pd.Timestamp(m5_t[i])): break
+                    
+                    if isinstance(broker_engine, StandardBrokerEngine):
+                        broker_engine.close_trade(pnl_usd, size, entry_price, is_jpy)
+                    elif isinstance(broker_engine, PropFirmEngine):
+                        broker_engine.process_trade(pnl_usd, pd.Timestamp(m5_t[i]))
+                        
                     trade_active = False; state = "neutral"; continue
                 elif m5_h[i] >= target_price:
                     exit_price = target_price
@@ -79,7 +114,12 @@ def run_backtest(df: pd.DataFrame, symbol: str, broker_config: dict, prop_firm_e
                     net_pnl_pips = raw_pnl - (slippage_pips * 2 + spread_pips)
                     pnl_usd = (net_pnl_pips * cfg['pip_value'] * size) - (commission_per_lot * size)
                     trades.append({"time": pd.Timestamp(m5_t[i]), "pnl": pnl_usd, "reason": "take_profit"})
-                    if not prop_firm_engine.process_trade(pnl_usd, pd.Timestamp(m5_t[i])): break
+                    
+                    if isinstance(broker_engine, StandardBrokerEngine):
+                        broker_engine.close_trade(pnl_usd, size, entry_price, is_jpy)
+                    elif isinstance(broker_engine, PropFirmEngine):
+                        broker_engine.process_trade(pnl_usd, pd.Timestamp(m5_t[i]))
+                        
                     trade_active = False; state = "neutral"; continue
             else:
                 if m5_h[i] >= stop_price:
@@ -88,7 +128,12 @@ def run_backtest(df: pd.DataFrame, symbol: str, broker_config: dict, prop_firm_e
                     net_pnl_pips = raw_pnl - (slippage_pips * 2 + spread_pips)
                     pnl_usd = (net_pnl_pips * cfg['pip_value'] * size) - (commission_per_lot * size)
                     trades.append({"time": pd.Timestamp(m5_t[i]), "pnl": pnl_usd, "reason": "stop_loss"})
-                    if not prop_firm_engine.process_trade(pnl_usd, pd.Timestamp(m5_t[i])): break
+                    
+                    if isinstance(broker_engine, StandardBrokerEngine):
+                        broker_engine.close_trade(pnl_usd, size, entry_price, is_jpy)
+                    elif isinstance(broker_engine, PropFirmEngine):
+                        broker_engine.process_trade(pnl_usd, pd.Timestamp(m5_t[i]))
+                        
                     trade_active = False; state = "neutral"; continue
                 elif m5_l[i] <= target_price:
                     exit_price = target_price
@@ -96,7 +141,12 @@ def run_backtest(df: pd.DataFrame, symbol: str, broker_config: dict, prop_firm_e
                     net_pnl_pips = raw_pnl - (slippage_pips * 2 + spread_pips)
                     pnl_usd = (net_pnl_pips * cfg['pip_value'] * size) - (commission_per_lot * size)
                     trades.append({"time": pd.Timestamp(m5_t[i]), "pnl": pnl_usd, "reason": "take_profit"})
-                    if not prop_firm_engine.process_trade(pnl_usd, pd.Timestamp(m5_t[i])): break
+                    
+                    if isinstance(broker_engine, StandardBrokerEngine):
+                        broker_engine.close_trade(pnl_usd, size, entry_price, is_jpy)
+                    elif isinstance(broker_engine, PropFirmEngine):
+                        broker_engine.process_trade(pnl_usd, pd.Timestamp(m5_t[i]))
+                        
                     trade_active = False; state = "neutral"; continue
             continue
 
@@ -128,10 +178,19 @@ def run_backtest(df: pd.DataFrame, symbol: str, broker_config: dict, prop_firm_e
                     target_price = entry_price + (risk * 2.0)
                     direction = "long"
                     
-                    # Position Sizing based on Prop Firm Balance
-                    risk_usd = prop_firm_engine.current_balance * 0.01 # 1% risk
+                    # Position Sizing
+                    if isinstance(broker_engine, PropFirmEngine):
+                        risk_usd = broker_engine.current_balance * 0.01 # 1% risk
+                    else: # StandardBrokerEngine
+                        risk_usd = broker_engine.equity * 0.01 # 1% of equity
+                        
                     stop_dist_pips = abs(entry_price - stop_price) / pip
                     size = risk_usd / (stop_dist_pips * cfg['pip_value'])
+                    
+                    # Try to open trade with broker
+                    if isinstance(broker_engine, StandardBrokerEngine):
+                        if not broker_engine.open_trade(size, entry_price, is_jpy):
+                            continue # Trade rejected, skip
                     
                     trade_active = True; entry_idx = i; active_ob = None; state = "neutral"
             elif is_h1_bear and m5_h[i] >= active_ob['bottom']:
@@ -143,10 +202,20 @@ def run_backtest(df: pd.DataFrame, symbol: str, broker_config: dict, prop_firm_e
                     target_price = entry_price - (risk * 2.0)
                     direction = "short"
                     
-                    risk_usd = prop_firm_engine.current_balance * 0.01
+                    # Position Sizing
+                    if isinstance(broker_engine, PropFirmEngine):
+                        risk_usd = broker_engine.current_balance * 0.01
+                    else: # StandardBrokerEngine
+                        risk_usd = broker_engine.equity * 0.01
+                        
                     stop_dist_pips = abs(stop_price - entry_price) / pip
                     size = risk_usd / (stop_dist_pips * cfg['pip_value'])
                     
+                    # Try to open trade with broker
+                    if isinstance(broker_engine, StandardBrokerEngine):
+                        if not broker_engine.open_trade(size, entry_price, is_jpy):
+                            continue # Trade rejected, skip
+                    
                     trade_active = True; entry_idx = i; active_ob = None; state = "neutral"
                     
-    return trades, prop_firm_engine
+    return trades, broker_engine
