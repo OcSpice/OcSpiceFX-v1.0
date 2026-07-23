@@ -19,10 +19,18 @@ ASSET_CONFIG = {
     'nzdjpy': {'pip_size': 0.01, 'pip_value': 6.67}
 }
 
-def load_data(symbol: str):
+def load_data(symbol: str, start_date: str = None, end_date: str = None):
     file_path = os.path.join(DATA_DIR, f"{symbol}_m5.parquet")
     if not os.path.exists(file_path): return None
-    df = pd.read_parquet(file_path)
+    
+    # Read Parquet, filtering by date DURING the read to save massive RAM
+    filters = []
+    if start_date: filters.append(('timestamp', '>=', pd.Timestamp(start_date, tz='UTC')))
+    if end_date: filters.append(('timestamp', '<=', pd.Timestamp(end_date, tz='UTC')))
+    
+    df = pd.read_parquet(file_path, filters=filters) if filters else pd.read_parquet(file_path)
+    
+    if df.empty: return None
     df['timestamp'] = pd.to_datetime(df['timestamp'], utc=True)
     df.set_index('timestamp', inplace=True)
     df.sort_index(inplace=True)
