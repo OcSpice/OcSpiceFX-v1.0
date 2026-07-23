@@ -2,8 +2,6 @@
 import pandas as pd
 import numpy as np
 import os
-from backend.prop_firm_engine import PropFirmEngine
-from backend.broker_engine import StandardBrokerEngine
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), '..', 'data', 'parquet')
 
@@ -30,39 +28,40 @@ def load_data(symbol: str):
     df.sort_index(inplace=True)
     return df
 
-def run_backtest(df: pd.DataFrame, symbol: str, broker_config: dict, broker_engine):
-    """
-    Run backtest with support for both PropFirmEngine and StandardBrokerEngine.
-    :param df: DataFrame with OHLCV data
-    :param symbol: Symbol name (e.g., 'eurusd')
-    :param broker_config: Dict with spread_pips, slippage_pips, commission_per_lot
-    :param broker_engine: Either PropFirmEngine or StandardBrokerEngine instance
-    """
+def run_backtest(df: pd.DataFrame, symbol: str, broker_config: dict, engine, risk_pct: float):
     cfg = ASSET_CONFIG[symbol]
     pip = cfg['pip_size']
-    is_jpy = 'jpy' in symbol.lower()
     
-    # Broker Config
-    spread_pips = broker_config.get('spread_pips', 1)
-    slippage_pips = broker_config.get('slippage_pips', 0.5)
-    commission_per_lot = broker_config.get('commission_per_lot', 5.0)
+    spread_pips = broker_config['spread_pips']
+    slippage_pips = broker_config['slippage_pips']
+    commission_per_lot = broker_config['commission_per_lot']
     
     # Build H1 Bias
     df_h1 = df.resample('1h').agg({'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last'}).dropna()
     df_h1['EMA_50'] = df_h1['close'].ewm(span=50, adjust=False).mean()
     
-    m5_t, m5_o, m5_h, m5_l, m5_c = df.index.values, df['open'].values, df['high'].values, df['low'].values, df['close'].values
-    h1_t, h1_ema, h1_c = df_h1.index.values, df_h1['EMA_50'].values, df_h1['close'].values
+    m5_t = df.index.values
+    m5_o = df['open'].values
+    m5_h = df['high'].values
+    m5_l = df['low'].values
+    m5_c = df['close'].values
     
-    trade_active, direction = False, ""
-    entry_price = stop_price = target_price = initial_stop = None
-    entry_idx, state, active_ob = 0, "neutral", None
-    size = 0.0
+    h1_t = df_h1.index.values
+    h1_ema = df_h1['EMA_50'].values
+    h1_c = df_h1['close'].values
+    
+    trade_active = False
+    direction = ""
+    entry_price = stop_price = target_price = initial_stop = 0.0
+    entry_idx = 0
+    state = "neutral"
+    active_ob = None
     trades = []
+    is_jpy = 'jpy' in symbol
     
     for i in range(60, len(df)):
         if trade_active:
-            # Calculate current floating PnL
+            # Calculate floating PnL for standard broker margin checks
             if direction == "long":
                 raw_pnl_pips = (m5_c[i] - entry_price) / pip
             else:
@@ -70,84 +69,75 @@ def run_backtest(df: pd.DataFrame, symbol: str, broker_config: dict, broker_engi
                 
             floating_pnl = (raw_pnl_pips * cfg['pip_value'] * size) - (commission_per_lot * size)
             
-            # Update broker with floating PnL
-            if isinstance(broker_engine, StandardBrokerEngine):
-                broker_engine.update_floating(floating_pnl)
-                if broker_engine.status == "Blown":
+            if hasattr(engine, 'update_floating'):
+                engine.update_floating(floating_pnl)
+                if engine.status == "Blown":
                     trades.append({"time": pd.Timestamp(m5_t[i]), "pnl": floating_pnl, "reason": "stop_out"})
-                    break # Account is blown, halt backtest
-            
-            # Time stop (120 candles = 10 hours)
+                    break
+
+            # Check Time Stop (120 candles)
             if i - entry_idx >= 120:
-                exit_price = m5_c[i]
-                # Apply costs
-                if direction == "long": raw_pnl = (exit_price - entry_price) / pip
-                else: raw_pnl = (entry_price - exit_price) / pip
-                net_pnl_pips = raw_pnl - (slippage_pips * 2 + spread_pips)
+                net_pnl_pips = raw_pnl_pips - (slippage_pips * 2 + spread_pips)
                 pnl_usd = (net_pnl_pips * cfg['pip_value'] * size) - (commission_per_lot * size)
                 trades.append({"time": pd.Timestamp(m5_t[i]), "pnl": pnl_usd, "reason": "time_stop"})
                 
-                if isinstance(broker_engine, StandardBrokerEngine):
-                    broker_engine.close_trade(pnl_usd, size, entry_price, is_jpy)
-                elif isinstance(broker_engine, PropFirmEngine):
-                    broker_engine.process_trade(pnl_usd, pd.Timestamp(m5_t[i]))
+                if hasattr(engine, 'close_trade'):
+                    if not engine.close_trade(pnl_usd, size, entry_price, is_jpy): break
+                else:
+                    if not engine.process_trade(pnl_usd, pd.Timestamp(m5_t[i])): break
                     
                 trade_active = False; state = "neutral"; continue
+
+            # Check Stop Loss
+            if direction == "long" and m5_l[i] <= stop_price:
+                net_pnl_pips = ((stop_price - entry_price) / pip) - (slippage_pips * 2 + spread_pips)
+                pnl_usd = (net_pnl_pips * cfg['pip_value'] * size) - (commission_per_lot * size)
+                trades.append({"time": pd.Timestamp(m5_t[i]), "pnl": pnl_usd, "reason": "stop_loss"})
                 
-            if direction == "long":
-                if m5_l[i] <= stop_price:
-                    exit_price = stop_price
-                    raw_pnl = (exit_price - entry_price) / pip
-                    net_pnl_pips = raw_pnl - (slippage_pips * 2 + spread_pips)
-                    pnl_usd = (net_pnl_pips * cfg['pip_value'] * size) - (commission_per_lot * size)
-                    trades.append({"time": pd.Timestamp(m5_t[i]), "pnl": pnl_usd, "reason": "stop_loss"})
+                if hasattr(engine, 'close_trade'):
+                    if not engine.close_trade(pnl_usd, size, entry_price, is_jpy): break
+                else:
+                    if not engine.process_trade(pnl_usd, pd.Timestamp(m5_t[i]))): break
                     
-                    if isinstance(broker_engine, StandardBrokerEngine):
-                        broker_engine.close_trade(pnl_usd, size, entry_price, is_jpy)
-                    elif isinstance(broker_engine, PropFirmEngine):
-                        broker_engine.process_trade(pnl_usd, pd.Timestamp(m5_t[i]))
-                        
-                    trade_active = False; state = "neutral"; continue
-                elif m5_h[i] >= target_price:
-                    exit_price = target_price
-                    raw_pnl = (exit_price - entry_price) / pip
-                    net_pnl_pips = raw_pnl - (slippage_pips * 2 + spread_pips)
-                    pnl_usd = (net_pnl_pips * cfg['pip_value'] * size) - (commission_per_lot * size)
-                    trades.append({"time": pd.Timestamp(m5_t[i]), "pnl": pnl_usd, "reason": "take_profit"})
+                trade_active = False; state = "neutral"; continue
+
+            # Check Take Profit
+            elif direction == "long" and m5_h[i] >= target_price:
+                net_pnl_pips = ((target_price - entry_price) / pip) - (slippage_pips * 2 + spread_pips)
+                pnl_usd = (net_pnl_pips * cfg['pip_value'] * size) - (commission_per_lot * size)
+                trades.append({"time": pd.Timestamp(m5_t[i]), "pnl": pnl_usd, "reason": "take_profit"})
+                
+                if hasattr(engine, 'close_trade'):
+                    if not engine.close_trade(pnl_usd, size, entry_price, is_jpy): break
+                else:
+                    if not engine.process_trade(pnl_usd, pd.Timestamp(m5_t[i]))): break
                     
-                    if isinstance(broker_engine, StandardBrokerEngine):
-                        broker_engine.close_trade(pnl_usd, size, entry_price, is_jpy)
-                    elif isinstance(broker_engine, PropFirmEngine):
-                        broker_engine.process_trade(pnl_usd, pd.Timestamp(m5_t[i]))
-                        
-                    trade_active = False; state = "neutral"; continue
-            else:
-                if m5_h[i] >= stop_price:
-                    exit_price = stop_price
-                    raw_pnl = (entry_price - exit_price) / pip
-                    net_pnl_pips = raw_pnl - (slippage_pips * 2 + spread_pips)
-                    pnl_usd = (net_pnl_pips * cfg['pip_value'] * size) - (commission_per_lot * size)
-                    trades.append({"time": pd.Timestamp(m5_t[i]), "pnl": pnl_usd, "reason": "stop_loss"})
+                trade_active = False; state = "neutral"; continue
+
+            # Short exits
+            if direction == "short" and m5_h[i] >= stop_price:
+                net_pnl_pips = ((entry_price - stop_price) / pip) - (slippage_pips * 2 + spread_pips)
+                pnl_usd = (net_pnl_pips * cfg['pip_value'] * size) - (commission_per_lot * size)
+                trades.append({"time": pd.Timestamp(m5_t[i]), "pnl": pnl_usd, "reason": "stop_loss"})
+                
+                if hasattr(engine, 'close_trade'):
+                    if not engine.close_trade(pnl_usd, size, entry_price, is_jpy): break
+                else:
+                    if not engine.process_trade(pnl_usd, pd.Timestamp(m5_t[i]))): break
                     
-                    if isinstance(broker_engine, StandardBrokerEngine):
-                        broker_engine.close_trade(pnl_usd, size, entry_price, is_jpy)
-                    elif isinstance(broker_engine, PropFirmEngine):
-                        broker_engine.process_trade(pnl_usd, pd.Timestamp(m5_t[i]))
-                        
-                    trade_active = False; state = "neutral"; continue
-                elif m5_l[i] <= target_price:
-                    exit_price = target_price
-                    raw_pnl = (entry_price - exit_price) / pip
-                    net_pnl_pips = raw_pnl - (slippage_pips * 2 + spread_pips)
-                    pnl_usd = (net_pnl_pips * cfg['pip_value'] * size) - (commission_per_lot * size)
-                    trades.append({"time": pd.Timestamp(m5_t[i]), "pnl": pnl_usd, "reason": "take_profit"})
+                trade_active = False; state = "neutral"; continue
+
+            elif direction == "short" and m5_l[i] <= target_price:
+                net_pnl_pips = ((entry_price - target_price) / pip) - (slippage_pips * 2 + spread_pips)
+                pnl_usd = (net_pnl_pips * cfg['pip_value'] * size) - (commission_per_lot * size)
+                trades.append({"time": pd.Timestamp(m5_t[i]), "pnl": pnl_usd, "reason": "take_profit"})
+                
+                if hasattr(engine, 'close_trade'):
+                    if not engine.close_trade(pnl_usd, size, entry_price, is_jpy): break
+                else:
+                    if not engine.process_trade(pnl_usd, pd.Timestamp(m5_t[i]))): break
                     
-                    if isinstance(broker_engine, StandardBrokerEngine):
-                        broker_engine.close_trade(pnl_usd, size, entry_price, is_jpy)
-                    elif isinstance(broker_engine, PropFirmEngine):
-                        broker_engine.process_trade(pnl_usd, pd.Timestamp(m5_t[i]))
-                        
-                    trade_active = False; state = "neutral"; continue
+                trade_active = False; state = "neutral"; continue
             continue
 
         # Session Filter (7 AM to 4 PM UTC)
@@ -156,7 +146,8 @@ def run_backtest(df: pd.DataFrame, symbol: str, broker_config: dict, broker_engi
 
         h1i = np.searchsorted(h1_t, m5_t[i]) - 1
         if h1i < 0: continue
-        is_h1_bull, is_h1_bear = h1_c[h1i] > h1_ema[h1i], h1_c[h1i] < h1_ema[h1i]
+        is_h1_bull = h1_c[h1i] > h1_ema[h1i]
+        is_h1_bear = h1_c[h1i] < h1_ema[h1i]
 
         if state == "neutral":
             if is_h1_bull:
@@ -179,20 +170,15 @@ def run_backtest(df: pd.DataFrame, symbol: str, broker_config: dict, broker_engi
                     direction = "long"
                     
                     # Position Sizing
-                    if isinstance(broker_engine, PropFirmEngine):
-                        risk_usd = broker_engine.current_balance * 0.01 # 1% risk
-                    else: # StandardBrokerEngine
-                        risk_usd = broker_engine.equity * 0.01 # 1% of equity
-                        
+                    risk_usd = engine.current_balance * risk_pct
                     stop_dist_pips = abs(entry_price - stop_price) / pip
                     size = risk_usd / (stop_dist_pips * cfg['pip_value'])
                     
-                    # Try to open trade with broker
-                    if isinstance(broker_engine, StandardBrokerEngine):
-                        if not broker_engine.open_trade(size, entry_price, is_jpy):
-                            continue # Trade rejected, skip
-                    
+                    if hasattr(engine, 'open_trade'):
+                        if not engine.open_trade(size, entry_price, is_jpy): continue
+                        
                     trade_active = True; entry_idx = i; active_ob = None; state = "neutral"
+                    
             elif is_h1_bear and m5_h[i] >= active_ob['bottom']:
                 if m5_c[i-1] > m5_o[i-1] and m5_c[i] < m5_o[i] and m5_o[i] >= m5_c[i-1] and m5_c[i] <= m5_o[i-1]:
                     entry_price = m5_c[i]
@@ -202,20 +188,13 @@ def run_backtest(df: pd.DataFrame, symbol: str, broker_config: dict, broker_engi
                     target_price = entry_price - (risk * 2.0)
                     direction = "short"
                     
-                    # Position Sizing
-                    if isinstance(broker_engine, PropFirmEngine):
-                        risk_usd = broker_engine.current_balance * 0.01
-                    else: # StandardBrokerEngine
-                        risk_usd = broker_engine.equity * 0.01
-                        
+                    risk_usd = engine.current_balance * risk_pct
                     stop_dist_pips = abs(stop_price - entry_price) / pip
                     size = risk_usd / (stop_dist_pips * cfg['pip_value'])
                     
-                    # Try to open trade with broker
-                    if isinstance(broker_engine, StandardBrokerEngine):
-                        if not broker_engine.open_trade(size, entry_price, is_jpy):
-                            continue # Trade rejected, skip
-                    
+                    if hasattr(engine, 'open_trade'):
+                        if not engine.open_trade(size, entry_price, is_jpy): continue
+                        
                     trade_active = True; entry_idx = i; active_ob = None; state = "neutral"
                     
-    return trades, broker_engine
+    return trades, engine
