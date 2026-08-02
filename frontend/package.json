@@ -1,0 +1,16 @@
+{
+  "name": "ocspicefx-frontend",
+  "version": "1.0.0",
+  "description": "Frontend for OcSpiceFX",
+  "private": true,
+  "scripts": {
+    "start": "echo \"Configure your frontend dev server\"",
+    "dev": "echo \"Configure your frontend dev server\"",
+    "build": "echo \"Frontend build placeholder\"",
+    "test": "echo \"No frontend tests yet\""
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "MIT"
+}
