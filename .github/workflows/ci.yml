@@ -1,0 +1,68 @@
+name: OcSpiceFX CI
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - step-1-data-pipeline
+  pull_request:
+    branches:
+      - "*"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        project:
+          - backend
+          - frontend
+          - data-pipeline
+
+    defaults:
+      run:
+        working-directory: ${{ matrix.project }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check if project exists
+        id: project
+        run: |
+          if [ -f package.json ]; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Setup Node.js
+        if: steps.project.outputs.exists == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ${{ matrix.project }}/package-lock.json
+
+      - name: Install dependencies
+        if: steps.project.outputs.exists == 'true'
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Run lint
+        if: steps.project.outputs.exists == 'true'
+        run: npm run lint --if-present
+
+      - name: Run tests
+        if: steps.project.outputs.exists == 'true'
+        run: npm test --if-present
+
+      - name: Build project
+        if: steps.project.outputs.exists == 'true'
+        run: npm run build --if-present
