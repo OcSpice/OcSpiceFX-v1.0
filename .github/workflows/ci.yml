@@ -38,13 +38,11 @@ jobs:
             echo "exists=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Setup Node.js
-        if: steps.project.outputs.exists == 'true'
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: ${{ matrix.project }}/package-lock.json
+- name: Setup Node.js
+  if: steps.project.outputs.exists == 'true'
+  uses: actions/setup-node@v4
+  with:
+    node-version: 22
 
       - name: Install dependencies
         if: steps.project.outputs.exists == 'true'
