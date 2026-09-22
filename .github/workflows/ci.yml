@@ -29,20 +29,20 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Check if project exists
+      - name: Check if Node project exists
         id: project
         run: |
           if [ -f package.json ]; then
-            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "exists=true" >> "$GITHUB_OUTPUT"
           else
-            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
-- name: Setup Node.js
-  if: steps.project.outputs.exists == 'true'
-  uses: actions/setup-node@v4
-  with:
-    node-version: 22
+      - name: Setup Node.js
+        if: steps.project.outputs.exists == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
 
       - name: Install dependencies
         if: steps.project.outputs.exists == 'true'
@@ -53,13 +53,13 @@ jobs:
             npm install
           fi
 
-      - name: Run lint
-        if: steps.project.outputs.exists == 'true'
-        run: npm run lint --if-present
-
       - name: Run tests
         if: steps.project.outputs.exists == 'true'
         run: npm test --if-present
+
+      - name: Run lint
+        if: steps.project.outputs.exists == 'true'
+        run: npm run lint --if-present
 
       - name: Build project
         if: steps.project.outputs.exists == 'true'
