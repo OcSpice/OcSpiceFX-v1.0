@@ -1,6 +1,6 @@
 # OcSpiceFX v1.0 - Strategy Laboratory
 
-A professional-grade Strategy Laboratory built with a Node.js data pipeline, FastAPI backend, and React frontend. This system downloads 20+ years of Dukascopy data, converts it to ultra-fast Parquet files, and runs backtests against the V19 Strategy Engine with strict Prop Firm Rule enforcement.
+A professional-grade Strategy Laboratory built with a Node.js data pipeline, FastAPI backend, and React frontend. This system downloads long-range Dukascopy data, converts it to ultra-fast Parquet files, and runs backtests against the V19 Strategy Engine with strict Prop Firm Rule enforcement.
 
 ## Project Structure
 
@@ -8,7 +8,7 @@ A professional-grade Strategy Laboratory built with a Node.js data pipeline, Fas
 oscipicex-lab/
 ├── data-pipeline/          # Node.js data pipeline
 │   ├── package.json
-│   ├── download.js         # Download M5 data from Dukascopy
+│   ├── download.js         # Download M5 data from Dukascopy into raw storage
 │   ├── merge.js            # Merge yearly CSVs
 │   └── convert.js          # Convert CSV to Parquet
 ├── data/                   # Data storage
@@ -48,7 +48,7 @@ npm install dukascopy-node fs-extra csv-parser parquets
 ### Running the Data Pipeline
 
 ```bash
-# Download M5 data from Dukascopy (2005-2024)
+# Download M5 data from Dukascopy (2005-current year)
 npm run download
 
 # Merge yearly CSVs into master CSVs per symbol
@@ -121,9 +121,9 @@ Then access the dashboard at `http://localhost:3000`
 
 ## Data Pipeline Stages
 
-1. **Download Stage:** Downloads M5 OHLCV data from Dukascopy for 11 assets (2005-2024)
-2. **Merge Stage:** Combines yearly CSVs into single master files per symbol
-3. **Convert Stage:** Transforms CSVs into column-oriented Parquet format for 100x faster queries
+1. **Download Stage:** Downloads M5 OHLCV data from Dukascopy for 11 assets from 2005 through the current year; unavailable historical years are recorded as no-data/errors rather than being fabricated
+2. **Merge Stage:** Combines yearly CSVs from `data/raw/` into single master files per normalized project symbol
+3. **Convert Stage:** Transforms merged CSVs into column-oriented Parquet format for efficient backtesting
 
 ## Performance Notes
 
