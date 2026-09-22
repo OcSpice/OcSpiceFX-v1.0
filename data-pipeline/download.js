@@ -1,51 +1,55 @@
-// data-pipeline/download.js
 import fs from 'fs';
 import path from 'path';
 import { getHistoricalRates } from 'dukascopy-node';
+import { instruments, START_YEAR, END_YEAR } from './instruments.js';
 
-const symbols = [
-    'xauusd', 'gbpusd', 'gbpjpy', 'usdjpy', 
-    'eurusd', 'eurjpy', 'usa30idxusd', 'dollaridxusd', 
-    'audjpy', 'nzdusd', 'nzdjpy'
-];
+const DATA_DIR = path.join(process.cwd(), '..', 'data', 'raw');
+fs.mkdirSync(DATA_DIR, { recursive: true });
 
-const DATA_DIR = path.join(process.cwd(), '..', 'data');
+async function downloadYear(instrument, year) {
+  const from = new Date(Date.UTC(year, 0, 1));
+  const requestedTo = new Date(Date.UTC(year + 1, 0, 1));
+  const to = requestedTo > new Date() ? new Date() : requestedTo;
+  const filePath = path.join(DATA_DIR, `${instrument.symbol}_${year}.csv`);
 
-if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+  if (fs.existsSync(filePath) && fs.statSync(filePath).size > 100) {
+    console.log(`[Cache] ${instrument.projectSymbol} ${year} already downloaded.`);
+    return;
+  }
 
-async function downloadYear(symbol, year) {
-    const from = new Date(Date.UTC(year, 0, 1));
-    const to = new Date(Date.UTC(year + 1, 0, 1));
-    const filePath = path.join(DATA_DIR, `${symbol}_${year}.csv`);
-    
-    if (fs.existsSync(filePath) && fs.statSync(filePath).size > 100) {
-        console.log(`[Cache] ${symbol} ${year} already downloaded.`);
-        return;
+  console.log(`[Downloading] ${instrument.projectSymbol} ${year} (${instrument.symbol})...`);
+  try {
+    const csvData = await getHistoricalRates({
+      instrument: instrument.symbol,
+      timeframe: 'm5',
+      priceType: 'ask',
+      volumes: true,
+      dates: { from, to },
+      format: 'csv',
+      batchSize: 6,
+      pauseBetweenBatchesMs: 500,
+      useCache: false
+    });
+
+    if (csvData && csvData.length > 100) {
+      fs.writeFileSync(filePath, csvData, 'utf8');
+      console.log(`[Success] Saved ${filePath}`);
+    } else {
+      console.log(`[No data] ${instrument.projectSymbol} ${year}`);
     }
-
-    console.log(`[Downloading] ${symbol} ${year}...`);
-    try {
-        const csvData = await getHistoricalRates({
-            instrument: symbol, timeframe: 'm5', priceType: 'ask', volumes: true,
-            dates: { from, to }, format: 'csv', batchSize: 6, pauseBetweenBatchesMs: 500, useCache: false
-        });
-        
-        if (csvData && csvData.length > 100) {
-            fs.writeFileSync(filePath, csvData, 'utf8');
-            console.log(`[Success] Saved ${symbol} ${year}.csv`);
-        }
-    } catch (error) {
-        console.error(`[Error] Failed ${symbol} ${year}: ${error.message}`);
-    }
+  } catch (error) {
+    console.error(`[Error] Failed ${instrument.projectSymbol} ${year}: ${error.message}`);
+  }
 }
 
 async function main() {
-    for (const symbol of symbols) {
-        for (let year = 2005; year <= 2024; year++) {
-            await downloadYear(symbol, year);
-            await new Promise(resolve => setTimeout(resolve, 1000));
-        }
+  console.log(`Downloading M5 historical data for ${instruments.length} instruments, ${START_YEAR}-${END_YEAR}...`);
+  for (const instrument of instruments) {
+    for (let year = START_YEAR; year <= END_YEAR; year++) {
+      await downloadYear(instrument, year);
+      await new Promise(resolve => setTimeout(resolve, 1000));
     }
-    console.log("All downloads complete!");
+  }
+  console.log('Download stage complete.');
 }
-main();
+main().catch(error => { console.error(error); process.exitCode = 1; });
