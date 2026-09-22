@@ -4,7 +4,7 @@ import fs from 'fs-extra';
 import csvParser from 'csv-parser';
 import { createReadStream } from 'fs';
 
-const symbols = ['xauusd', 'gbpusd', 'gbpjpy', 'usdjpy', 'eurusd', 'eurjpy', 'usa30idxusd', 'dollaridxusd', 'audjpy', 'nzdusd', 'nzdjpy'];
+const symbols = ['XAUUSD', 'GBPUSD', 'GBPJPY', 'USDJPY', 'EURUSD', 'EURJPY', 'US30', 'DXY', 'AUDJPY', 'NZDUSD', 'NZDJPY'];
 const MERGED_DIR = path.join(process.cwd(), '..', 'data', 'merged');
 const PARQUET_DIR = path.join(process.cwd(), '..', 'data', 'parquet');
 
