@@ -8,9 +8,15 @@
     "download": "node download.js",
     "merge": "node merge.js",
     "convert": "node convert.js",
-    "pipeline": "npm run download && npm run merge && npm run convert"
+    "pipeline": "npm run download && npm run merge && npm run convert",
+    "test": "node --check download.js && node --check merge.js && node --check convert.js && node --check instruments.js"
   },
-  "keywords": ["dukascopy", "forex", "data", "pipeline"],
+  "keywords": [
+    "dukascopy",
+    "forex",
+    "data",
+    "pipeline"
+  ],
   "author": "OcSpice",
   "license": "ISC",
   "dependencies": {
